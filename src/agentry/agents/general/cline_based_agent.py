@@ -1,11 +1,11 @@
-from agentry.agents.general.pure_open_router_llm_agent import PureOpenRouterLlmAgent
+from agentry.agents.general.openai_compatible_agents import OpenAiCompatibleTokenCalculatingAgent
 from aiser.models import ChatMessage
 import typing
 
 cline_preamble = """You are Cline, a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns, and best practices"""
 
 
-class ClineBasedAgent(PureOpenRouterLlmAgent):
+class ClineBasedAgent(OpenAiCompatibleTokenCalculatingAgent):
     modified_cline_agent_signature = "END OF MODIFIED CLINE SYSTEM PROMPT"
     def modify_cline_system_prompt(self, starting_system_prompt: str) -> str:
         return starting_system_prompt

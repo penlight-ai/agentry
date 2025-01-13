@@ -9,7 +9,7 @@ from src.services.chat_service import ChatService
 from langchain_core.messages import AIMessage
 
 
-class PureOpenRouterLlmAgent(StandardAgent):
+class OpenAiCompatibleTokenCalculatingAgent(StandardAgent):
     def __init__(
         self,
         model: str,

@@ -52,12 +52,12 @@ class MemoryManager(ABC):
 
 
 class CustomAgentState(BaseModel):
-    messages: typing.Sequence[BaseMessage]
-    main_subagent_input_messages: typing.Sequence[BaseMessage]
-    main_subagent_output_messages: typing.Sequence[BaseMessage]
-    active_procedural_memories: typing.Sequence[MemoryData]
-    active_semantic_memories: typing.Sequence[MemoryData]
-    active_episodic_memories: typing.Sequence[MemoryData]
+    messages: typing.Sequence[BaseMessage] = []
+    main_subagent_input_messages: typing.Sequence[BaseMessage] = []
+    main_subagent_output_messages: typing.Sequence[BaseMessage] = []
+    active_procedural_memories: typing.Sequence[MemoryData] = []
+    active_semantic_memories: typing.Sequence[MemoryData] = []
+    active_episodic_memories: typing.Sequence[MemoryData] = []
 
 
 class FeedContextNode(LanggraphNode):

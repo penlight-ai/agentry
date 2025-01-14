@@ -1,0 +1,6 @@
+langgraph
+langchain-core
+langchain-community
+langchain-openai
+-e git+https://github.com/penlight-ai/agentry.git@main#egg=agentry
+grandalf

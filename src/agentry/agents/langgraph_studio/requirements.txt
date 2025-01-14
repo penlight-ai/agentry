@@ -5,3 +5,4 @@ langchain-openai
 langfuse
 -e git+https://github.com/penlight-ai/agentry.git@main#egg=agentry
 grandalf
+python-dotenv

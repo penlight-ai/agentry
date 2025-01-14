@@ -96,8 +96,7 @@ class LongTermMemoryAgent(StandardAgent):
         self.compiled_graph = self.build_langgraph_graph()
 
     
-    @staticmethod
-    def build_langgraph_graph() -> CompiledStateGraph:
+    def build_langgraph_graph(self) -> CompiledStateGraph:
         graph = StateGraph(CustomAgentState)
         feed_context_node = FeedContextNode()
         generate_answer_node = GenerateAnswerNode()
@@ -124,6 +123,9 @@ class LongTermMemoryAgent(StandardAgent):
             completion_tokens=self.token_usage_for_last_reply.completion_tokens,
         )
 
+    def get_graph(self) -> CompiledStateGraph:
+        return self.compiled_graph
+    
     def use_graph(self):
         initial_state = CustomAgentState(
             messages=[

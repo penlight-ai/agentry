@@ -1,4 +1,3 @@
-
 from agentry.models.chat import TokenUsage, ChatMessage
 import typing
 import asyncio
@@ -7,6 +6,7 @@ from agentry.models.model_providers import OpenAiCompatibleApiConfig
 from agentry.models.logging import LangfuseKeyInfo
 from agentry.services.chat_service import ChatService
 from langchain_core.messages import AIMessage
+from agentry.services.chat_service import FullChatModel
 
 from pydantic import BaseModel
 from agentry.utils.langgraph import LanggraphNode
@@ -15,6 +15,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, HumanMessage
 import typing
 from abc import ABC, abstractmethod
+from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
+
 
 class MemoryData(BaseModel):
     id: str
@@ -26,7 +29,7 @@ class MemoryData(BaseModel):
 
 class Memory(ABC):
     @abstractmethod
-    def get_data(self) -> typing.List[MemoryData]:
+    def get_data(self) -> typing.Sequence[MemoryData]:
         pass
 
     @abstractmethod
@@ -40,7 +43,7 @@ class Memory(ABC):
 
 class MemoryManager(ABC):
     @abstractmethod
-    def get_memories(self) -> typing.List[Memory]:
+    def get_memories(self) -> typing.Sequence[Memory]:
         pass
 
     @abstractmethod
@@ -49,12 +52,12 @@ class MemoryManager(ABC):
 
 
 class CustomAgentState(BaseModel):
-    messages: typing.List[BaseMessage]
-    main_subagent_input_messages: typing.List[BaseMessage]
-    main_subagent_output_messages: typing.List[BaseMessage]
-    active_procedural_memories: typing.List[MemoryData]
-    active_semantic_memories: typing.List[MemoryData]
-    active_episodic_memories: typing.List[MemoryData]
+    messages: typing.Sequence[BaseMessage]
+    main_subagent_input_messages: typing.Sequence[BaseMessage]
+    main_subagent_output_messages: typing.Sequence[BaseMessage]
+    active_procedural_memories: typing.Sequence[MemoryData]
+    active_semantic_memories: typing.Sequence[MemoryData]
+    active_episodic_memories: typing.Sequence[MemoryData]
 
 
 class FeedContextNode(LanggraphNode):
@@ -65,9 +68,20 @@ class FeedContextNode(LanggraphNode):
 
 
 class GenerateAnswerNode(LanggraphNode):
-    def run(self, state: CustomAgentState) -> CustomAgentState:
+    def __init__(
+        self,
+        chat_model: FullChatModel,
+    ):
+        self.chat_model = chat_model
+
+    def run(self, state: CustomAgentState, config: RunnableConfig) -> CustomAgentState:
         state.messages.append(AIMessage(content="-- GenerateAnswerNode"))
         print("GenerateAnswerNode")
+        self.token_usage_for_last_reply = TokenUsage()
+        messages_in_langchain = [
+            AIMessage(content=message.content) for message in state.main_subagent_input_messages
+        ]
+        self.chat_model.model.invoke(messages_in_langchain, config=config)
         return state
 
 
@@ -76,7 +90,6 @@ class SummarizeNode(LanggraphNode):
         state.messages.append(AIMessage(content="-- SummarizeNode"))
         print("SummarizeNode")
         return state
-
 
 
 class LongTermMemoryAgent(StandardAgent):
@@ -93,17 +106,27 @@ class LongTermMemoryAgent(StandardAgent):
 
     def setup(self):
         super().setup()
-        self.compiled_graph = self.build_langgraph_graph()
+        # Create a new model instance for streaming
+        chat_service = ChatService()
+        self.chat_model = chat_service.make_typical_chat_model(
+            model_name=self.model,
+            langfuse_key_info=self.langfuse_key_info,
+            api_config=self.api_config,
+        )
+        self.compiled_graph = self.build_langgraph_graph(chat_model=self.chat_model)
 
-    
-    def build_langgraph_graph(self) -> CompiledStateGraph:
+    def build_langgraph_graph(self, chat_model: FullChatModel) -> CompiledStateGraph:
         graph = StateGraph(CustomAgentState)
         feed_context_node = FeedContextNode()
-        generate_answer_node = GenerateAnswerNode()
+        generate_answer_node = GenerateAnswerNode(
+            chat_model=chat_model,
+        )
         summarize_node = SummarizeNode()
 
         graph.add_node(**feed_context_node.get_as_kwargs())
-        graph.add_node(**generate_answer_node.get_as_kwargs())
+        graph.add_node(
+            node=generate_answer_node.get_name(), action=generate_answer_node.run
+        )
         graph.add_node(**summarize_node.get_as_kwargs())
 
         graph.add_edge(START, feed_context_node.get_name())
@@ -116,7 +139,6 @@ class LongTermMemoryAgent(StandardAgent):
 
         return compiled_graph
 
-
     def get_latest_reply_token_usage(self) -> typing.Optional[TokenUsage]:
         return TokenUsage(
             prompt_tokens=self.token_usage_for_last_reply.prompt_tokens,
@@ -125,25 +147,35 @@ class LongTermMemoryAgent(StandardAgent):
 
     def get_graph(self) -> CompiledStateGraph:
         return self.compiled_graph
-    
-    def use_graph(self):
+
+    async def use_graph(self, latest_messages: typing.Sequence[ChatMessage]) -> typing.AsyncGenerator[ChatMessage, None]:
+        input_messages: typing.Sequence[BaseMessage] = [
+            AIMessage(content=latest_message.text_content) for latest_message in latest_messages
+        ]
         initial_state = CustomAgentState(
-            messages=[
-                HumanMessage(content="initial message"),
-            ],
-            main_subagent_input_messages=[],
+            messages=input_messages,
+            main_subagent_input_messages=input_messages,
             main_subagent_output_messages=[],
             active_procedural_memories=[],
             active_semantic_memories=[],
             active_episodic_memories=[],
         )
-        r = self.compiled_graph.invoke(initial_state)
-        r_state = CustomAgentState(**r)
-        for message in r_state.messages:
-            message.pretty_print()
+        async for event in self.compiled_graph.astream_events(
+            initial_state, version="v2"
+        ):
+            node_name = event["metadata"].get("langgraph_node", "")
+            if (
+                node_name != "GenerateAnswerNode"
+                or event["event"] != "on_chat_model_stream"
+            ):
+                continue
+            data = event["data"]
+            content = data["chunk"].content
+            yield ChatMessage(text_content=str(content))
+
 
     async def reply(
-        self, messages: typing.List[ChatMessage]
+        self, messages: typing.Sequence[ChatMessage]
     ) -> typing.AsyncGenerator[ChatMessage, None]:
         # Convert messages to the format required by OpenRouter
         self.token_usage_for_last_reply = TokenUsage()
@@ -151,18 +183,7 @@ class LongTermMemoryAgent(StandardAgent):
             AIMessage(content=message.text_content) for message in messages
         ]
 
-        # Create a new model instance for streaming
-        chat_service = ChatService()
-        chat_model = chat_service.make_typical_chat_model(
-            model_name=self.model,
-            langfuse_key_info=self.langfuse_key_info,
-            api_config=self.api_config,
-        )
-
-        # Generate streaming response
-        async for chunk in chat_model.model.astream(messages_in_langchain):
-            # Update token usage from callback handler
-            yield ChatMessage(text_content=str(chunk.content))
-            self.token_usage_for_last_reply = chat_model.get_tokens()
-            await asyncio.sleep(0.01)
-        self.token_usage_for_last_reply = chat_model.get_tokens()
+        async for msg in self.use_graph(latest_messages=messages):
+            self.token_usage_for_last_reply = self.chat_model.get_tokens()
+            yield msg
+        self.token_usage_for_last_reply = self.chat_model.get_tokens()

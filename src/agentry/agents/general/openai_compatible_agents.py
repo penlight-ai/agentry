@@ -1,5 +1,4 @@
-from aiser.agent import Agent, TokenUsage
-from aiser.models import ChatMessage
+from agentry.models.chat import TokenUsage, ChatMessage
 import typing
 import asyncio
 from agentry.agents.general.standard_agent import StandardAgent
@@ -13,11 +12,9 @@ class OpenAiCompatibleTokenCalculatingAgent(StandardAgent):
     def __init__(
         self,
         model: str,
-        agent_id: str,
         langfuse_key_info: LangfuseKeyInfo,
         api_config: OpenAiCompatibleApiConfig,
     ):
-        super().__init__(agent_id=agent_id)
         self.model = model
         self.token_usage_for_last_reply = TokenUsage()
         self.langfuse_key_info = langfuse_key_info

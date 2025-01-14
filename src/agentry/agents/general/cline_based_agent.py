@@ -1,11 +1,27 @@
 from agentry.agents.general.openai_compatible_agents import OpenAiCompatibleTokenCalculatingAgent
-from aiser.models import ChatMessage
+from agentry.models.chat import ChatMessage
 import typing
+from agentry.models.logging import LangfuseKeyInfo
+from agentry.models.model_providers import OpenAiCompatibleApiConfig
 
 cline_preamble = """You are Cline, a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns, and best practices"""
 
 
 class ClineBasedAgent(OpenAiCompatibleTokenCalculatingAgent):
+    def __init__(
+        self,
+        name: str,
+        model: str,
+        langfuse_key_info: LangfuseKeyInfo,
+        api_config: OpenAiCompatibleApiConfig,
+    ):
+        super().__init__(
+            model=model,
+            langfuse_key_info=langfuse_key_info,
+            api_config=api_config,
+        )
+        self.name = name
+
     modified_cline_agent_signature = "END OF MODIFIED CLINE SYSTEM PROMPT"
     def modify_cline_system_prompt(self, starting_system_prompt: str) -> str:
         return starting_system_prompt

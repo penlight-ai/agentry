@@ -4,7 +4,7 @@ import asyncio
 from agentry.agents.general.standard_agent import StandardAgent
 from agentry.models.model_providers import OpenAiCompatibleApiConfig
 from agentry.models.logging import LangfuseKeyInfo
-from src.services.chat_service import ChatService
+from agentry.services.chat_service import ChatService
 from langchain_core.messages import AIMessage
 
 

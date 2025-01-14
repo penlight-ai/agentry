@@ -22,8 +22,8 @@ open_router_api_config = OpenAiCompatibleApiConfig(
 agent = LongTermMemoryAgent(
     model="anthropic/claude-3.5-sonnet:beta",
     langfuse_key_info=LangfuseKeyInfo(
-        public_key=get_env_var("PERSONAL_CATHY_LANGFUSE_PUBLIC_KEY"),
-        secret_key=get_env_var("PERSONAL_CATHY_LANGFUSE_SECRET_KEY"),
+        public_key=get_env_var("LANGFUSE_PUBLIC_KEY"),
+        secret_key=get_env_var("LANGFUSE_SECRET_KEY"),
     ),
     api_config=open_router_api_config,
 )

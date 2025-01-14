@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, List
 from langchain.callbacks.base import BaseCallbackHandler
-from aiser.agent.agent import TokenUsage
+from agentry.agents.general.standard_agent import TokenUsage
 
 # Set debug level for detailed token counting logs
 token_logger = logging.getLogger(__name__)

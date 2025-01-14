@@ -52,12 +52,12 @@ class MemoryManager(ABC):
 
 
 class CustomAgentState(BaseModel):
-    messages: typing.Sequence[BaseMessage] = []
-    main_subagent_input_messages: typing.Sequence[BaseMessage] = []
-    main_subagent_output_messages: typing.Sequence[BaseMessage] = []
-    active_procedural_memories: typing.Sequence[MemoryData] = []
-    active_semantic_memories: typing.Sequence[MemoryData] = []
-    active_episodic_memories: typing.Sequence[MemoryData] = []
+    messages: typing.List[BaseMessage] = []
+    main_subagent_input_messages: typing.List[BaseMessage] = []
+    main_subagent_output_messages: typing.List[BaseMessage] = []
+    active_procedural_memories: typing.List[MemoryData] = []
+    active_semantic_memories: typing.List[MemoryData] = []
+    active_episodic_memories: typing.List[MemoryData] = []
 
 
 class FeedContextNode(LanggraphNode):
@@ -79,9 +79,13 @@ class GenerateAnswerNode(LanggraphNode):
         print("GenerateAnswerNode")
         self.token_usage_for_last_reply = TokenUsage()
         messages_in_langchain = [
-            AIMessage(content=message.content) for message in state.main_subagent_input_messages
+            AIMessage(content=message.content)
+            for message in state.main_subagent_input_messages
         ]
-        self.chat_model.model.invoke(messages_in_langchain, config=config)
+        response_message = self.chat_model.model.invoke(
+            messages_in_langchain, config=config
+        )
+        state.main_subagent_output_messages.append(response_message)
         return state
 
 
@@ -148,9 +152,12 @@ class LongTermMemoryAgent(StandardAgent):
     def get_graph(self) -> CompiledStateGraph:
         return self.compiled_graph
 
-    async def use_graph(self, latest_messages: typing.Sequence[ChatMessage]) -> typing.AsyncGenerator[ChatMessage, None]:
+    async def use_graph(
+        self, latest_messages: typing.Sequence[ChatMessage]
+    ) -> typing.AsyncGenerator[ChatMessage, None]:
         input_messages: typing.Sequence[BaseMessage] = [
-            AIMessage(content=latest_message.text_content) for latest_message in latest_messages
+            AIMessage(content=latest_message.text_content)
+            for latest_message in latest_messages
         ]
         initial_state = CustomAgentState(
             messages=input_messages,
@@ -172,7 +179,6 @@ class LongTermMemoryAgent(StandardAgent):
             data = event["data"]
             content = data["chunk"].content
             yield ChatMessage(text_content=str(content))
-
 
     async def reply(
         self, messages: typing.Sequence[ChatMessage]

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 class StandardAgent(ABC):
     @abstractmethod
-    def reply(self, messages: typing.List[ChatMessage]) -> typing.AsyncGenerator[ChatMessage, None]:
+    def reply(self, messages: typing.Sequence[ChatMessage]) -> typing.AsyncGenerator[ChatMessage, None]:
         raise NotImplementedError
     
     def get_latest_reply_token_usage(self) -> typing.Optional[TokenUsage]:

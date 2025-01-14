@@ -164,5 +164,3 @@ class LongTermMemoryAgent(StandardAgent):
             self.token_usage_for_last_reply = chat_model.get_tokens()
             await asyncio.sleep(0.01)
         self.token_usage_for_last_reply = chat_model.get_tokens()
-
-compiled_graph = LongTermMemoryAgent.build_langgraph_graph()

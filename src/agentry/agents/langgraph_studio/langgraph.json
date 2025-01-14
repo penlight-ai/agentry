@@ -1,7 +1,7 @@
 {
   "dockerfile_lines": [],
   "graphs": {
-    "simple_graph": "./long_term_memory_agent.py:compiled_graph"
+    "simple_graph": "./studio.py:compiled_graph"
   },
   "env": "./.env",
   "python_version": "3.11",

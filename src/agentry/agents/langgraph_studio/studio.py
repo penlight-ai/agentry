@@ -1,0 +1,3 @@
+from agentry.agents.general.long_term_memory_agent import LongTermMemoryAgent
+
+compiled_graph = LongTermMemoryAgent.build_langgraph_graph()

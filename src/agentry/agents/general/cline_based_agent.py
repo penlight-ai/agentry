@@ -2,7 +2,7 @@ from agentry.agents.general.long_term_memory_agent import LongTermMemoryAgent
 from agentry.memory.memory import SimpleMemory, MemoryData
 from agentry.models.chat import ChatMessage
 import typing
-from agentry.models.logging import LangfuseKeyInfo
+from langchain_core.callbacks import BaseCallbackHandler
 from agentry.models.model_providers import OpenAiCompatibleApiConfig
 
 cline_preamble = """You are Cline, a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns, and best practices"""
@@ -13,12 +13,12 @@ class ClineBasedAgent(LongTermMemoryAgent):
         self,
         name: str,
         model: str,
-        langfuse_key_info: LangfuseKeyInfo,
         api_config: OpenAiCompatibleApiConfig,
+        callbacks: typing.Optional[typing.List[BaseCallbackHandler]] = None,
     ):
         super().__init__(
             model=model,
-            langfuse_key_info=langfuse_key_info,
+            callbacks=callbacks,
             api_config=api_config,
         )
         self.name = name

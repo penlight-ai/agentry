@@ -3,21 +3,21 @@ import typing
 import asyncio
 from agentry.agents.general.standard_agent import StandardAgent
 from agentry.models.model_providers import OpenAiCompatibleApiConfig
-from agentry.models.logging import LangfuseKeyInfo
-from agentry.services.chat_service import ChatService
 from langchain_core.messages import AIMessage
+from langchain_core.callbacks import BaseCallbackHandler
+from agentry.services.chat_service import ChatService
 
 
 class OpenAiCompatibleTokenCalculatingAgent(StandardAgent):
     def __init__(
         self,
         model: str,
-        langfuse_key_info: LangfuseKeyInfo,
         api_config: OpenAiCompatibleApiConfig,
+        callbacks: typing.Optional[typing.List[BaseCallbackHandler]] = None,
     ):
         self.model = model
         self.token_usage_for_last_reply = TokenUsage()
-        self.langfuse_key_info = langfuse_key_info
+        self.callbacks = callbacks
         self.api_config = api_config
 
     def get_latest_reply_token_usage(self) -> typing.Optional[TokenUsage]:
@@ -36,7 +36,7 @@ class OpenAiCompatibleTokenCalculatingAgent(StandardAgent):
         chat_service = ChatService()
         chat_model = chat_service.make_typical_chat_model(
             model_name=self.model,
-            langfuse_key_info=self.langfuse_key_info,
+            callbacks=self.callbacks,
             api_config=self.api_config,
         )
 

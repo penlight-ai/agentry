@@ -10,11 +10,12 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from agentry.models.model_providers import OpenAiCompatibleApiConfig
-from agentry.models.logging import LangfuseKeyInfo
 
 from agentry.models.chat_models import Message
 from ..utils.message_converter import convert_messages
 from .token_service import TokenUsageCallbackHandler
+from langchain_core.callbacks import BaseCallbackHandler
+
 
 # Set debug level for detailed streaming logs
 stream_logger = logging.getLogger(__name__ + ".stream")
@@ -23,12 +24,14 @@ stream_logger.setLevel(logging.DEBUG)
 from agentry.agents.general.standard_agent import TokenUsage
 from langfuse.callback import CallbackHandler
 
+
 def tokens_to_api_dict(token_usage: TokenUsage) -> Dict[str, int]:
     return {
         "prompt_tokens": token_usage.prompt_tokens,
         "completion_tokens": token_usage.completion_tokens,
-        "total_tokens": token_usage.total_tokens
+        "total_tokens": token_usage.total_tokens,
     }
+
 
 class FullChatModel:
     def __init__(
@@ -36,45 +39,39 @@ class FullChatModel:
         chat_model: BaseChatModel,
         token_usage_handler: TokenUsageCallbackHandler,
         model_name: str,
-        tracing_handler: typing.Optional[CallbackHandler] = None,
     ):
         self.model = chat_model
         self.token_usage_handler = token_usage_handler
         self.model_name = model_name
-        self.tracing_handler = tracing_handler
 
     def get_tokens(self) -> TokenUsage:
         return self.token_usage_handler.get_tokens()
+
 
 class ChatService:
     def make_typical_chat_model(
         self,
         model_name: str,
-        langfuse_key_info: LangfuseKeyInfo,
         api_config: OpenAiCompatibleApiConfig,
+        callbacks: typing.Optional[typing.List[BaseCallbackHandler]] = None,
     ) -> FullChatModel:
-        langfuse_handler = CallbackHandler(
-            public_key=langfuse_key_info.public_key,
-            secret_key=langfuse_key_info.secret_key,
-            host="https://cloud.langfuse.com",
-        )
         token_usage_handler = TokenUsageCallbackHandler()
-        callbacks = [
-            langfuse_handler,
+        merged_callbacks = [
             token_usage_handler,
         ]
+        if callbacks:
+            merged_callbacks = merged_callbacks + callbacks
         chat_model = ChatOpenAI(
             api_key=SecretStr(api_config.api_key or ""),
             base_url=api_config.url_base,
             model=model_name,
             streaming=True,
-            callbacks=callbacks,
+            callbacks=merged_callbacks,
         )
         return FullChatModel(
             chat_model=chat_model,
             token_usage_handler=token_usage_handler,
             model_name=model_name,
-            tracing_handler=langfuse_handler,
         )
 
     async def generate_stream(
@@ -207,5 +204,5 @@ class ChatService:
                     "finish_reason": "stop",
                 }
             ],
-            "usage": tokens_to_api_dict(token_usage)
+            "usage": tokens_to_api_dict(token_usage),
         }

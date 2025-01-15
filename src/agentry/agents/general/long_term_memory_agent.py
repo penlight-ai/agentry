@@ -3,7 +3,6 @@ import typing
 import asyncio
 from agentry.agents.general.standard_agent import StandardAgent
 from agentry.models.model_providers import OpenAiCompatibleApiConfig
-from agentry.models.logging import LangfuseKeyInfo
 from agentry.services.chat_service import ChatService
 from langchain_core.messages import AIMessage
 from agentry.services.chat_service import FullChatModel
@@ -92,12 +91,12 @@ class LongTermMemoryAgent(StandardAgent):
     def __init__(
         self,
         model: str,
-        langfuse_key_info: LangfuseKeyInfo,
         api_config: OpenAiCompatibleApiConfig,
+        callbacks: typing.Optional[typing.List[BaseCallbackHandler]] = None
     ):
         self.model = model
         self.token_usage_for_last_reply = TokenUsage()
-        self.langfuse_key_info = langfuse_key_info
+        self.callbacks = callbacks
         self.api_config = api_config
         # This thread_id is hardcoded temporarily. In this future, threads should at least
         # be separated by user and probably also by user session.
@@ -112,15 +111,15 @@ class LongTermMemoryAgent(StandardAgent):
         chat_service = ChatService()
         self.chat_model = chat_service.make_typical_chat_model(
             model_name=self.model,
-            langfuse_key_info=self.langfuse_key_info,
             api_config=self.api_config,
+            callbacks=self.callbacks,
         )
         self.compiled_graph = self.build_langgraph_graph(chat_model=self.chat_model)
 
     def _make_graph_config(self) -> RunnableConfig:
         callbacks: typing.List[BaseCallbackHandler] = []
-        if self.chat_model.tracing_handler:
-            callbacks.append(self.chat_model.tracing_handler)
+        if self.callbacks:
+            callbacks.extend(self.callbacks)
         if self.chat_model.token_usage_handler:
             callbacks.append(self.chat_model.token_usage_handler)
         return {
@@ -206,14 +205,14 @@ class LongTermMemoryAgent(StandardAgent):
         async for event in self.compiled_graph.astream_events(
             pre_reply_state, config=self._make_graph_config(), version="v2"
         ):
-            node_name = event["metadata"].get("langgraph_node", "")
+            node_name = event.get("metadata", {}).get("langgraph_node", "")
             if (
                 node_name != "GenerateAnswerNode"
                 or event["event"] != "on_chat_model_stream"
             ):
                 continue
             data = event["data"]
-            content = data["chunk"].content
+            content = data.get("chunk", {}).get("content", "")
             yield ChatMessage(text_content=str(content))
 
     async def reply(

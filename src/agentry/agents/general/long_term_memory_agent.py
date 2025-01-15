@@ -36,16 +36,13 @@ class FeedContextNode(LanggraphNode):
         return SystemMessage(content=f"Procedural Memory: {memory.title}\n{memory.description}\n{memory.content}")
 
     def run(self, state: CustomAgentState) -> CustomAgentState:
-        state.messages_from_client = list(state.messages_from_client) + [
-            AIMessage(content="-- FeedContextNode")
-        ]
         print("FeedContextNode")
         sorted_memories = sorted(state.procedural_memories, key=lambda x: x.order_factor)
         system_messages = [
             self._procedural_memory_to_system_message(memory)
             for memory in sorted_memories
         ]
-        state.main_subagent_input_messages =  system_messages + state.messages_from_client 
+        state.main_subagent_input_messages =  system_messages + list(state.messages_from_client)
         return state
 
 
@@ -57,9 +54,6 @@ class GenerateAnswerNode(LanggraphNode):
         self.chat_model = chat_model
 
     def run(self, state: CustomAgentState, config: RunnableConfig) -> CustomAgentState:
-        state.messages_from_client = list(state.messages_from_client) + [
-            AIMessage(content="-- GenerateAnswerNode")
-        ]
         print("GenerateAnswerNode")
         self.token_usage_for_last_reply = TokenUsage()
         messages_in_langchain = [
@@ -75,9 +69,6 @@ class GenerateAnswerNode(LanggraphNode):
 
 class SummarizeNode(LanggraphNode):
     def run(self, state: CustomAgentState) -> CustomAgentState:
-        state.messages_from_client = list(state.messages_from_client) + [
-            AIMessage(content="-- SummarizeNode")
-        ]
         print("SummarizeNode")
         return state
 

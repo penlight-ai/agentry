@@ -52,7 +52,8 @@ class ClineBasedAgent(LongTermMemoryAgent):
                     self.have_added_cline_system_prompt_to_procedural_memory = True
                 break
 
-        async for chunk in super().reply(messages):
+        messages_without_cline_system_prompt = [msg for msg in messages if not msg.text_content.startswith(cline_preamble)]
+        async for chunk in super().reply(messages_without_cline_system_prompt):
             yield chunk
 
     def cline_system_prompt_is_already_modfied(self, msg: ChatMessage) -> bool:

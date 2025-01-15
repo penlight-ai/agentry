@@ -4,6 +4,7 @@ import logging
 import asyncio
 from os import getenv
 from typing import List, AsyncGenerator, Dict, Any
+import typing
 from pydantic import SecretStr
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -35,10 +36,12 @@ class FullChatModel:
         chat_model: BaseChatModel,
         token_usage_handler: TokenUsageCallbackHandler,
         model_name: str,
+        tracing_handler: typing.Optional[CallbackHandler] = None,
     ):
         self.model = chat_model
         self.token_usage_handler = token_usage_handler
         self.model_name = model_name
+        self.tracing_handler = tracing_handler
 
     def get_tokens(self) -> TokenUsage:
         return self.token_usage_handler.get_tokens()
@@ -56,7 +59,10 @@ class ChatService:
             host="https://cloud.langfuse.com",
         )
         token_usage_handler = TokenUsageCallbackHandler()
-        callbacks = [langfuse_handler, token_usage_handler]
+        callbacks = [
+            langfuse_handler,
+            token_usage_handler,
+        ]
         chat_model = ChatOpenAI(
             api_key=SecretStr(api_config.api_key or ""),
             base_url=api_config.url_base,
@@ -68,6 +74,7 @@ class ChatService:
             chat_model=chat_model,
             token_usage_handler=token_usage_handler,
             model_name=model_name,
+            tracing_handler=langfuse_handler,
         )
 
     async def generate_stream(

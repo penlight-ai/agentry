@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from agentry.memory.memory import MemoryData, Memory
 from langchain_core.messages import trim_messages
+from langchain_core.callbacks import BaseCallbackHandler
 
 
 class CustomAgentState(BaseModel):
@@ -31,7 +32,7 @@ class CustomAgentState(BaseModel):
 
 
 class FeedContextNode(LanggraphNode):
-    def __init__(self, max_tokens: int = 400) -> None:
+    def __init__(self, max_tokens: int = 30000) -> None:
         super().__init__()
         self.max_tokens = max_tokens
 
@@ -117,10 +118,16 @@ class LongTermMemoryAgent(StandardAgent):
         self.compiled_graph = self.build_langgraph_graph(chat_model=self.chat_model)
 
     def _make_graph_config(self) -> RunnableConfig:
+        callbacks: typing.List[BaseCallbackHandler] = []
+        if self.chat_model.tracing_handler:
+            callbacks.append(self.chat_model.tracing_handler)
+        if self.chat_model.token_usage_handler:
+            callbacks.append(self.chat_model.token_usage_handler)
         return {
             "configurable": {
                 "thread_id": self.thread_id,
-            }
+            },
+            "callbacks": callbacks,
         }
 
     def _check_is_called_after_setup(self, method_name: str):

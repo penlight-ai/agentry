@@ -17,53 +17,35 @@ import typing
 from abc import ABC, abstractmethod
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-
-
-class MemoryData(BaseModel):
-    id: str
-    title: str
-    description: str
-    content: str
-    is_active: bool = True
-
-
-class Memory(ABC):
-    @abstractmethod
-    def get_data(self) -> typing.Sequence[MemoryData]:
-        pass
-
-    @abstractmethod
-    def update(self, data: MemoryData) -> MemoryData:
-        pass
-
-    @abstractmethod
-    def delete(self) -> None:
-        pass
-
-
-class MemoryManager(ABC):
-    @abstractmethod
-    def get_memories(self) -> typing.Sequence[Memory]:
-        pass
-
-    @abstractmethod
-    def add_memory(self, memory: MemoryData) -> None:
-        pass
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import  add_messages
+from agentry.memory.memory import MemoryData, Memory
 
 
 class CustomAgentState(BaseModel):
-    messages: typing.List[BaseMessage] = []
-    main_subagent_input_messages: typing.List[BaseMessage] = []
-    main_subagent_output_messages: typing.List[BaseMessage] = []
-    active_procedural_memories: typing.List[MemoryData] = []
-    active_semantic_memories: typing.List[MemoryData] = []
-    active_episodic_memories: typing.List[MemoryData] = []
+    messages_from_client: typing.Sequence[BaseMessage]= []
+    main_subagent_input_messages: typing.Sequence[BaseMessage] = []
+    main_subagent_output_messages: typing.Sequence[BaseMessage] = []
+    procedural_memories: typing.Sequence[MemoryData] = []
+    semantic_memories: typing.Sequence[MemoryData] = []
+    episodic_memories: typing.Sequence[MemoryData] = []
 
 
 class FeedContextNode(LanggraphNode):
+    def _procedural_memory_to_system_message(self, memory: MemoryData) -> SystemMessage:
+        return SystemMessage(content=f"Procedural Memory: {memory.title}\n{memory.description}\n{memory.content}")
+
     def run(self, state: CustomAgentState) -> CustomAgentState:
-        state.messages.append(AIMessage(content="-- FeedContextNode"))
+        state.messages_from_client = list(state.messages_from_client) + [
+            AIMessage(content="-- FeedContextNode")
+        ]
         print("FeedContextNode")
+        sorted_memories = sorted(state.procedural_memories, key=lambda x: x.order_factor)
+        system_messages = [
+            self._procedural_memory_to_system_message(memory)
+            for memory in sorted_memories
+        ]
+        state.main_subagent_input_messages =  system_messages + state.messages_from_client 
         return state
 
 
@@ -75,7 +57,9 @@ class GenerateAnswerNode(LanggraphNode):
         self.chat_model = chat_model
 
     def run(self, state: CustomAgentState, config: RunnableConfig) -> CustomAgentState:
-        state.messages.append(AIMessage(content="-- GenerateAnswerNode"))
+        state.messages_from_client = list(state.messages_from_client) + [
+            AIMessage(content="-- GenerateAnswerNode")
+        ]
         print("GenerateAnswerNode")
         self.token_usage_for_last_reply = TokenUsage()
         messages_in_langchain = [
@@ -85,13 +69,15 @@ class GenerateAnswerNode(LanggraphNode):
         response_message = self.chat_model.model.invoke(
             messages_in_langchain, config=config
         )
-        state.main_subagent_output_messages.append(response_message)
+        state.main_subagent_output_messages = list(state.main_subagent_output_messages) + [response_message]
         return state
 
 
 class SummarizeNode(LanggraphNode):
     def run(self, state: CustomAgentState) -> CustomAgentState:
-        state.messages.append(AIMessage(content="-- SummarizeNode"))
+        state.messages_from_client = list(state.messages_from_client) + [
+            AIMessage(content="-- SummarizeNode")
+        ]
         print("SummarizeNode")
         return state
 
@@ -107,6 +93,12 @@ class LongTermMemoryAgent(StandardAgent):
         self.token_usage_for_last_reply = TokenUsage()
         self.langfuse_key_info = langfuse_key_info
         self.api_config = api_config
+        # This thread_id is hardcoded temporarily. In this future, threads should at least
+        # be separated by user and probably also by user session.
+        self.thread_id = "1"
+        self.pre_reply_state = CustomAgentState()
+        self.procedural_memories: typing.List[Memory] = []
+        self.semantic_memories: typing.List[Memory] = []
 
     def setup(self):
         super().setup()
@@ -118,6 +110,29 @@ class LongTermMemoryAgent(StandardAgent):
             api_config=self.api_config,
         )
         self.compiled_graph = self.build_langgraph_graph(chat_model=self.chat_model)
+
+    def _make_graph_config(self) -> RunnableConfig:
+        return {
+            "configurable": {
+                "thread_id": self.thread_id,
+            }
+        }
+
+    def _check_is_called_after_setup(self, method_name: str):
+        if not self.compiled_graph:
+            raise Exception(f"{method_name} should only be called after setup.")
+
+    def get_state(self):
+        self._check_is_called_after_setup(method_name=self.get_state.__name__)
+        return self.compiled_graph.get_state(
+            config=self._make_graph_config(), subgraphs=True
+        )
+
+    # def update_pre_reply_state(self, state: CustomAgentState):
+    #     return state
+
+    def add_procedural_memories(self, memories: typing.List[Memory]):
+        self.procedural_memories = self.procedural_memories + memories
 
     def build_langgraph_graph(self, chat_model: FullChatModel) -> CompiledStateGraph:
         graph = StateGraph(CustomAgentState)
@@ -138,7 +153,7 @@ class LongTermMemoryAgent(StandardAgent):
         graph.add_edge(generate_answer_node.get_name(), summarize_node.get_name())
         graph.add_edge(summarize_node.get_name(), END)
 
-        compiled_graph = graph.compile()
+        compiled_graph = graph.compile(checkpointer=MemorySaver())
         print(compiled_graph.get_graph().draw_ascii())
 
         return compiled_graph
@@ -152,6 +167,18 @@ class LongTermMemoryAgent(StandardAgent):
     def get_graph(self) -> CompiledStateGraph:
         return self.compiled_graph
 
+    def _get_pre_reply_state(
+        self, input_messages: typing.Sequence[BaseMessage]
+    ) -> CustomAgentState:
+        procedural_memory_data_list: typing.List[MemoryData] = [memory.get_data() for memory in self.procedural_memories]
+        semantic_memory_data_list: typing.List[MemoryData] = [memory.get_data() for memory in self.semantic_memories]
+        return CustomAgentState(
+            messages_from_client=input_messages,
+            main_subagent_input_messages=input_messages,
+            procedural_memories=procedural_memory_data_list,
+            semantic_memories=semantic_memory_data_list,
+        )
+
     async def use_graph(
         self, latest_messages: typing.Sequence[ChatMessage]
     ) -> typing.AsyncGenerator[ChatMessage, None]:
@@ -159,16 +186,11 @@ class LongTermMemoryAgent(StandardAgent):
             AIMessage(content=latest_message.text_content)
             for latest_message in latest_messages
         ]
-        initial_state = CustomAgentState(
-            messages=input_messages,
-            main_subagent_input_messages=input_messages,
-            main_subagent_output_messages=[],
-            active_procedural_memories=[],
-            active_semantic_memories=[],
-            active_episodic_memories=[],
-        )
+        pre_reply_state = self._get_pre_reply_state(input_messages)
         async for event in self.compiled_graph.astream_events(
-            initial_state, version="v2"
+            pre_reply_state, 
+            config=self._make_graph_config(),
+            version="v2"
         ):
             node_name = event["metadata"].get("langgraph_node", "")
             if (

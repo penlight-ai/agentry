@@ -1,6 +1,7 @@
 from pathlib import Path
 from .prompt_providers import PromptProvider, MarkdownPromptProvider
 from typing import Optional
+import typing as t
 
 
 class DefaultPromptProviders:
@@ -75,7 +76,7 @@ class DefaultPromptProviders:
     class TrustedContextGroup(PromptProvider):
         trusted_context_group_tag = "trusted_context_group"
 
-        def __init__(self, context_providers: list[PromptProvider]):
+        def __init__(self, context_providers: t.Sequence[PromptProvider]):
             self.context_providers = context_providers
 
         def get_as_text(self) -> str:

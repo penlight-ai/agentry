@@ -14,16 +14,15 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
 from langchain_core.messages import BaseMessage, AIMessage, SystemMessage, HumanMessage
 import typing
-from abc import ABC, abstractmethod
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import  add_messages
 from agentry.memory.memory import MemoryData, Memory
+from langchain_core.messages import trim_messages
 
 
 class CustomAgentState(BaseModel):
-    messages_from_client: typing.Sequence[BaseMessage]= []
+    messages_from_client: typing.Sequence[BaseMessage] = []
     main_subagent_input_messages: typing.Sequence[BaseMessage] = []
     main_subagent_output_messages: typing.Sequence[BaseMessage] = []
     procedural_memories: typing.Sequence[MemoryData] = []
@@ -32,17 +31,30 @@ class CustomAgentState(BaseModel):
 
 
 class FeedContextNode(LanggraphNode):
+    def __init__(self, max_tokens: int = 400) -> None:
+        super().__init__()
+        self.max_tokens = max_tokens
+
     def _procedural_memory_to_system_message(self, memory: MemoryData) -> SystemMessage:
-        return SystemMessage(content=f"Procedural Memory: {memory.title}\n{memory.description}\n{memory.content}")
+        return SystemMessage(
+            content=f"Procedural Memory: {memory.title}\n{memory.description}\n{memory.content}"
+        )
 
     def run(self, state: CustomAgentState) -> CustomAgentState:
         print("FeedContextNode")
-        sorted_memories = sorted(state.procedural_memories, key=lambda x: x.order_factor)
+        sorted_memories = sorted(
+            state.procedural_memories, key=lambda x: x.order_factor
+        )
         system_messages = [
             self._procedural_memory_to_system_message(memory)
             for memory in sorted_memories
         ]
-        state.main_subagent_input_messages =  system_messages + list(state.messages_from_client)
+        trimmed_messages = trim_messages(
+            state.messages_from_client,
+            max_tokens=self.max_tokens,
+            token_counter=ChatOpenAI(model="gpt-4o"),
+        )
+        state.main_subagent_input_messages = system_messages + list(trimmed_messages)
         return state
 
 
@@ -63,7 +75,9 @@ class GenerateAnswerNode(LanggraphNode):
         response_message = self.chat_model.model.invoke(
             messages_in_langchain, config=config
         )
-        state.main_subagent_output_messages = list(state.main_subagent_output_messages) + [response_message]
+        state.main_subagent_output_messages = list(
+            state.main_subagent_output_messages
+        ) + [response_message]
         return state
 
 
@@ -161,8 +175,12 @@ class LongTermMemoryAgent(StandardAgent):
     def _get_pre_reply_state(
         self, input_messages: typing.Sequence[BaseMessage]
     ) -> CustomAgentState:
-        procedural_memory_data_list: typing.List[MemoryData] = [memory.get_data() for memory in self.procedural_memories]
-        semantic_memory_data_list: typing.List[MemoryData] = [memory.get_data() for memory in self.semantic_memories]
+        procedural_memory_data_list: typing.List[MemoryData] = [
+            memory.get_data() for memory in self.procedural_memories
+        ]
+        semantic_memory_data_list: typing.List[MemoryData] = [
+            memory.get_data() for memory in self.semantic_memories
+        ]
         return CustomAgentState(
             messages_from_client=input_messages,
             main_subagent_input_messages=input_messages,
@@ -179,9 +197,7 @@ class LongTermMemoryAgent(StandardAgent):
         ]
         pre_reply_state = self._get_pre_reply_state(input_messages)
         async for event in self.compiled_graph.astream_events(
-            pre_reply_state, 
-            config=self._make_graph_config(),
-            version="v2"
+            pre_reply_state, config=self._make_graph_config(), version="v2"
         ):
             node_name = event["metadata"].get("langgraph_node", "")
             if (

@@ -417,7 +417,11 @@ class LongTermMemoryAgent(StandardAgent):
             ):
                 continue
             data = event["data"]
-            content = data.get("chunk", {}).get("content", "")
+            chunk = data.get("chunk")
+            if isinstance(chunk, BaseMessage):
+                content = chunk.content
+            else:
+                content = ""
             yield ChatMessage(text_content=str(content))
 
     async def reply(

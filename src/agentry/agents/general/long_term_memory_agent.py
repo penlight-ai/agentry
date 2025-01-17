@@ -319,6 +319,11 @@ class LongTermMemoryAgent(StandardAgent):
             api_config=self.api_config,
             callbacks=self.callbacks,
         )
+        self.feed_context_node = FeedContextNode()
+        self.generate_answer_node = GenerateAnswerNode(
+            chat_model=self.chat_model,
+        )
+        self.summarize_node = SummarizeNode()
         self.compiled_graph = self.build_langgraph_graph(chat_model=self.chat_model)
 
     def _make_graph_config(self) -> RunnableConfig:
@@ -352,22 +357,17 @@ class LongTermMemoryAgent(StandardAgent):
 
     def build_langgraph_graph(self, chat_model: FullChatModel) -> CompiledStateGraph:
         graph = StateGraph(CustomAgentState)
-        feed_context_node = FeedContextNode()
-        generate_answer_node = GenerateAnswerNode(
-            chat_model=chat_model,
-        )
-        summarize_node = SummarizeNode()
 
-        graph.add_node(**feed_context_node.get_as_kwargs())
+        graph.add_node(**self.feed_context_node.get_as_kwargs())
         graph.add_node(
-            node=generate_answer_node.get_name(), action=generate_answer_node.run
+            node=self.generate_answer_node.get_name(), action=self.generate_answer_node.run
         )
-        graph.add_node(**summarize_node.get_as_kwargs())
+        graph.add_node(**self.summarize_node.get_as_kwargs())
 
-        graph.add_edge(START, feed_context_node.get_name())
-        graph.add_edge(feed_context_node.get_name(), generate_answer_node.get_name())
-        graph.add_edge(generate_answer_node.get_name(), summarize_node.get_name())
-        graph.add_edge(summarize_node.get_name(), END)
+        graph.add_edge(START, self.feed_context_node.get_name())
+        graph.add_edge(self.feed_context_node.get_name(), self.generate_answer_node.get_name())
+        graph.add_edge(self.generate_answer_node.get_name(), self.summarize_node.get_name())
+        graph.add_edge(self.summarize_node.get_name(), END)
 
         compiled_graph = graph.compile(checkpointer=MemorySaver())
         print(compiled_graph.get_graph().draw_ascii())
@@ -412,7 +412,7 @@ class LongTermMemoryAgent(StandardAgent):
         ):
             node_name = event.get("metadata", {}).get("langgraph_node", "")
             if (
-                node_name != "GenerateAnswerNode"
+                node_name != self.generate_answer_node.get_name()
                 or event["event"] != "on_chat_model_stream"
             ):
                 continue

@@ -7,11 +7,7 @@ from agentry.services.chat_service import ChatService
 from langchain_core.messages import AIMessage
 from agentry.services.chat_service import FullChatModel
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
-from langchain_core.messages import BaseMessage
-from langchain_core.messages import HumanMessage
-from langchain_core.messages import AIMessage
-
+from langchain_core.messages import SystemMessage, BaseMessage, AIMessage
 from pydantic import BaseModel
 from agentry.utils.langgraph import LanggraphNode
 from langgraph.graph import StateGraph, START, END
@@ -21,6 +17,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from agentry.memory.memory import MemoryData, Memory
 from langchain_core.messages import trim_messages
 from langchain_core.callbacks import BaseCallbackHandler
+from agentry.memory.memory import SimpleMemoryManager, MemoryManager
+from agentry.utils.model_names import default_router_model_names, ModelNames
 
 
 class CustomAgentState(BaseModel):
@@ -30,10 +28,14 @@ class CustomAgentState(BaseModel):
     procedural_memories: typing.Sequence[MemoryData] = []
     semantic_memories: typing.Sequence[MemoryData] = []
     episodic_memories: typing.Sequence[MemoryData] = []
-    conversation_summary: str = ""  # Stores the latest conversation summary
 
 
-class FeedContextNode(LanggraphNode):
+class LanggraphNodeWithLifeCycle(LanggraphNode):
+    def on_about_to_run_graph(self, state: CustomAgentState) -> CustomAgentState:
+        return state
+
+
+class FeedContextNode(LanggraphNodeWithLifeCycle):
     def __init__(self, max_tokens: int = 30000) -> None:
         super().__init__()
         self.max_tokens = max_tokens
@@ -52,6 +54,14 @@ class FeedContextNode(LanggraphNode):
             self._procedural_memory_to_system_message(memory)
             for memory in sorted_memories
         ]
+        system_messages.append(
+            SystemMessage(
+                content=f"""
+The current episodic memory (symmary of previous events and messages) is: 
+{chr(10).join(f"{memory.content}" for memory in state.episodic_memories)}
+"""
+            )
+        )
         trimmed_messages = trim_messages(
             state.messages_from_client,
             max_tokens=self.max_tokens,
@@ -61,7 +71,7 @@ class FeedContextNode(LanggraphNode):
         return state
 
 
-class GenerateAnswerNode(LanggraphNode):
+class GenerateAnswerNode(LanggraphNodeWithLifeCycle):
     def __init__(
         self,
         chat_model: FullChatModel,
@@ -70,6 +80,7 @@ class GenerateAnswerNode(LanggraphNode):
 
     def run(self, state: CustomAgentState, config: RunnableConfig) -> CustomAgentState:
         print("GenerateAnswerNode")
+        # return state
         self.token_usage_for_last_reply = TokenUsage()
         messages_in_langchain = [
             AIMessage(content=message.content)
@@ -84,31 +95,67 @@ class GenerateAnswerNode(LanggraphNode):
         return state
 
 
-class SummarizeNode(LanggraphNode):
-    def __init__(self, max_tokens: int = 30000, max_bullet_points: int = 20):
+class SummarizeNode(LanggraphNodeWithLifeCycle):
+    def __init__(
+        self,
+        memory_manager: MemoryManager,
+        summarization_model: str,
+        api_config: OpenAiCompatibleApiConfig,
+        max_tokens: int = 100000,
+        max_bullet_points: int = 20,
+        summarization_frequency: int = 3,
+    ):
         super().__init__()
+        self.memory_manager = memory_manager
+        self.summarization_model = summarization_model
         self.max_tokens = max_tokens
         self.max_bullet_points = max_bullet_points
+        self.api_config = api_config
+        self.summarization_frequency = summarization_frequency
+        # Create a chat service and get a chat model
+        chat_service = ChatService()
+        self.chat_model = chat_service.make_typical_chat_model(
+            model_name=self.summarization_model,
+            api_config=self.api_config,
+            callbacks=None,
+        )
 
-    def _create_summarization_prompt(self, previous_summary: str, messages: typing.Sequence[BaseMessage]) -> str:
-        typescript_code = '''```typescript
+    def on_about_to_run_graph(self, state: CustomAgentState) -> CustomAgentState:
+        # load the episodic memory
+        episodic_memory = self.memory_manager.get_or_otherwise_create_memory(
+            memory_to_create=Memory(
+                data=MemoryData(
+                    id="episodic_memory",
+                    title="Episodic Memory",
+                    description="A memory that contains a running summary of the conversation and events that have occurred.",
+                    content="",
+                )
+            )
+        )
+        state.episodic_memories = [episodic_memory.data]
+        return state
+
+    def _create_summarization_prompt(
+        self, previous_summary: str, messages: typing.Sequence[BaseMessage]
+    ) -> str:
+        typescript_code = """```typescript
   const cachedData = await redis.get(key);
   if (!cachedData) {
     const validated = validateUserPrefs(data);
     await redis.set(key, JSON.stringify(validated), 'EX', 3600);
   }
-  ```'''
-        
-        sql_code = '''```sql
+  ```"""
+
+        sql_code = """```sql
   -- Before: SELECT * FROM orders o LEFT JOIN products p ... LEFT JOIN users u ...
   -- After:  SELECT * FROM orders o LEFT JOIN users u ... LEFT JOIN products p ...
-  ```'''
-        
-        bash_code = '''```bash
+  ```"""
+
+        bash_code = """```bash
   setfacl -m u:1000:rwx /host/path/to/data
   setfacl -m d:u:1000:rwx /host/path/to/data
-  ```'''
-        
+  ```"""
+
         return f"""You are a highly skilled AI tasked with creating concise, insightful summaries of conversations. Your goal is to create a summary that preserves the key information and insights while being much shorter than the original conversation.
 
 Guidelines for creating summaries:
@@ -131,16 +178,20 @@ Here are examples showing different summarization approaches:
 Example 1
 
 Takeaways from this example:
-Shows how to include specific error messages and technical details when relevant. Notice that the entire previous summary is preserved because we haven't reached our bullet point limit. Technical details like error messages, commands, and code blocks are included when they might be useful later in the conversation. The bullet points vary in length - some are concise while others contain detailed technical information when warranted.
+Shows how to handle overlapping messages between previous summary and new messages. Notice that new messages often include content that was already summarized - this is normal and expected. The agent should recognize that messages like "We're running as non-root for security" appear both in the previous summary and new messages, as we're always processing a sliding window of recent messages. Technical details like error messages, commands, and code blocks are included when they might be useful later. The bullet points vary in length - some are concise while others contain detailed technical information when warranted.
 
 Input:
 Previous summary:
 • User requested Docker container setup for production environment
 • Agent suggested using multi-stage builds for smaller image size
 • User agreed but mentioned need for specific file permissions
+• User reported container failing to start
+• Agent identified permission issue with volume mount
 
 New messages:
-[user]: The container keeps failing to start
+[user]: We're running as non-root for security
+[assistant]: Yes, that's why we're seeing the permission errors. Let me help fix that.
+[user]: The container keeps failing to start with the same error
 [assistant]: Let me check the logs... I see a permission error when trying to write to /data/app.log
 [user]: Yes, we're running as non-root for security
 [assistant]: We'll need to adjust the user permissions. Here's how...
@@ -169,10 +220,10 @@ Previous summary:
 • Agent implemented initial endpoint with swagger-jsdoc
 • User reported validation issues with nested objects
 • Agent fixed validation using Joi schema
-• User requested rate limiting for security
-• Agent added express-rate-limit middleware
 
 New messages:
+[user]: The validation with Joi schema is working well
+[assistant]: Great to hear! Would you like to add more validation rules?
 [user]: Can we add caching to improve performance?
 [assistant]: Yes, let's implement Redis caching
 [user]: How will this affect the existing validation?
@@ -180,7 +231,7 @@ New messages:
 
 Expected Ideal Output:
 • User and Agent collaborated on REST API endpoint implementation, covering TypeScript, OpenAPI docs, and Joi validation
-• Agent added rate limiting with express-rate-limit after security discussion
+• User confirmed successful validation implementation with Joi schema
 • User requested Redis caching for performance optimization
 • Agent implemented caching layer after validation:
 {typescript_code}
@@ -195,24 +246,23 @@ Previous summary:
 • Team working on database performance optimization
 • Initial analysis showed missing indexes on several tables
 • Added indexes on customer_id and order_date columns
+• Found missing index on user_id
+• Added index, reducing query time to 5s
 
 New messages:
-[user]: Can you help optimize this SQL query?
-[assistant]: Let's analyze the query first...
-[user]: It's taking 15 seconds to run
-[assistant]: Found missing index on user_id
-[user]: How do we add the index?
-[assistant]: Here's the command...
-[user]: Now getting timeout on join
-[assistant]: The join order needs optimization
+[user]: The index on user_id helped a lot
+[assistant]: Yes, the query is much faster now, but I see we can optimize it further
+[user]: Can you help optimize this SQL query more?
+[assistant]: Let's analyze the query structure first...
+[user]: It's still taking about 5 seconds to run
+[assistant]: I found the issue - the join order is suboptimal
 [user]: Can you show the before and after?
 [assistant]: Here's the comparison...
 
 Expected Ideal Output:
 • Team working on database performance optimization
 • Added indexes on customer_id, order_date, and user_id columns
-• User requested SQL query optimization for query taking 15s to execute
-• Agent identified and added missing index on user_id column, reducing time to 5s
+• User confirmed significant performance improvement from user_id index
 • Team discovered and fixed suboptimal join order: "Changed LEFT JOIN users before products table, leveraging new index"
 • Query now executes in 200ms with specific improvements:
 {sql_code}
@@ -225,52 +275,78 @@ Previous Summary:
 {previous_summary}
 
 Current Messages to Summarize:
+
+--- START of messages to summarize ---
+
 {chr(10).join(f"[{msg.type}]: {msg.content}" for msg in messages)}
+
+--- END of messages to summarize ---
+
+As a reminder, here is the previous summary:
+{previous_summary}
 
 Create a bullet-point summary following the guidelines above. Remember:
 1. Include the previous summary's points, condensing older ones if needed
 2. Stay under {self.max_bullet_points} total bullet points
 3. Include specific details (errors, code, commands) when they might be valuable later
-4. Output ONLY bullet points with no headers or sections"""
+4. Output ONLY bullet points with no headers or sections
+5. Make sure to keep the temportal and logical consistency of the summary. Meaning, the order of the events has to be correct.
+If in doubt, just keep the previous summary and append some new bullet points to it. It's not necessary to rewrite the entire summary everytime.
+6. The summary should change slowly with time. The previously summary should mostly be kept the same unless there a need to summarize 
+because we have reached the total bullet point limit. Other notable exceptions include updating the previous summary because a new detail
+has become more important or relevant according to the latest messages. 
+7. Your end goal is to create a summary that is a good representation of the conversation and events that have occurred.
+You will be called every few messages.
+"""
 
     def run(self, state: CustomAgentState) -> CustomAgentState:
         print("SummarizeNode")
-        return state
-        
-        # Create a chat service and get a chat model
-        chat_service = ChatService()
-        chat_model = chat_service.make_typical_chat_model(
-            model_name="gpt-4o-mini",
-            api_config=OpenAiCompatibleApiConfig(
-                url_base="",  # Will be filled by environment variables
-                api_key="",   # Will be filled by environment variables
-            ),
-            callbacks=None
-        )
-        
+        # return state
+        if len(state.messages_from_client) % self.summarization_frequency != 0:
+            return state
+
         # Trim messages to avoid token overflow
-        all_messages = list(state.main_subagent_input_messages)
+        all_messages = list(state.messages_from_client)
         if state.main_subagent_output_messages:
             all_messages.extend(state.main_subagent_output_messages)
-            
+
         trimmed_messages = trim_messages(
             all_messages,
             max_tokens=self.max_tokens,
             token_counter=ChatOpenAI(model="gpt-4o"),
         )
-        
+
+        # episodic_memory = self.memory_manager.get_or_otherwise_create_memory(
+        #     memory_to_create=Memory(
+        #         data=MemoryData(
+        #             id="episodic_memory",
+        #             title="Episodic Memory",
+        #             description="A memory that contains a running summary of the conversation and events that have occurred.",
+        #             content="",
+        #         )
+        #     )
+        # )
+        episodic_memory = Memory(state.episodic_memories[0])
+
+        state.episodic_memories = [episodic_memory.data]
         # Create the prompt with previous summary and trimmed messages
         prompt = self._create_summarization_prompt(
-            previous_summary=state.conversation_summary if state.conversation_summary else "No previous summary available",
-            messages=trimmed_messages
+            previous_summary=(
+                state.episodic_memories[0].content
+                if state.episodic_memories
+                else "No previous summary available"
+            ),
+            messages=trimmed_messages,
         )
-        
+
         # Prepare the conversation history for summarization
         messages_to_summarize = [SystemMessage(content=prompt)]
-        
+
         # Get the summary
-        summary_message = chat_model.model.invoke(messages_to_summarize)
-        
+        summary_message = self.chat_model.model.invoke(messages_to_summarize)
+        episodic_memory.data.content = str(summary_message.content)
+        self.memory_manager.update_memory(episodic_memory)
+
         # Store the summary in the state
         # The invoke method returns an AIMessage, so we need to get its content
         # and ensure it's a string
@@ -278,17 +354,13 @@ Create a bullet-point summary following the guidelines above. Remember:
             summary_content = summary_message.content
         else:
             summary_content = str(summary_message)
-            
+
         # Convert any complex content to string
         if isinstance(summary_content, (list, dict)):
             summary_content = str(summary_content)
-            
-        state.conversation_summary = summary_content
-        
-        # Print for debugging
-        print("\nConversation Summary:")
-        print(state.conversation_summary)
-        
+
+        state.episodic_memories = [episodic_memory.data]
+
         return state
 
 
@@ -297,9 +369,17 @@ class LongTermMemoryAgent(StandardAgent):
         self,
         model: str,
         api_config: OpenAiCompatibleApiConfig,
-        callbacks: typing.Optional[typing.List[BaseCallbackHandler]] = None
+        summarization_model: typing.Optional[str] = None,
+        memory_manager: typing.Optional[MemoryManager] = None,
+        callbacks: typing.Optional[typing.List[BaseCallbackHandler]] = None,
+        router_model_names: typing.Optional[ModelNames] = None,
     ):
         self.model = model
+        self.router_model_names = router_model_names or default_router_model_names
+        self.summarization_model = (
+            summarization_model
+            or self.router_model_names.anthropic_claude_3_5_sonnet_beta
+        )
         self.token_usage_for_last_reply = TokenUsage()
         self.callbacks = callbacks
         self.api_config = api_config
@@ -309,6 +389,10 @@ class LongTermMemoryAgent(StandardAgent):
         self.pre_reply_state = CustomAgentState()
         self.procedural_memories: typing.List[Memory] = []
         self.semantic_memories: typing.List[Memory] = []
+        if memory_manager:
+            self.memory_manager = memory_manager
+        else:
+            self.memory_manager = SimpleMemoryManager()
 
     def setup(self):
         super().setup()
@@ -323,8 +407,17 @@ class LongTermMemoryAgent(StandardAgent):
         self.generate_answer_node = GenerateAnswerNode(
             chat_model=self.chat_model,
         )
-        self.summarize_node = SummarizeNode()
+        self.summarize_node = SummarizeNode(
+            memory_manager=self.memory_manager,
+            summarization_model=self.summarization_model,
+            api_config=self.api_config,
+        )
         self.compiled_graph = self.build_langgraph_graph(chat_model=self.chat_model)
+        self.graph_nodes = [
+            self.feed_context_node,
+            self.generate_answer_node,
+            self.summarize_node,
+        ]
 
     def _make_graph_config(self) -> RunnableConfig:
         callbacks: typing.List[BaseCallbackHandler] = []
@@ -360,13 +453,18 @@ class LongTermMemoryAgent(StandardAgent):
 
         graph.add_node(**self.feed_context_node.get_as_kwargs())
         graph.add_node(
-            node=self.generate_answer_node.get_name(), action=self.generate_answer_node.run
+            node=self.generate_answer_node.get_name(),
+            action=self.generate_answer_node.run,
         )
         graph.add_node(**self.summarize_node.get_as_kwargs())
 
         graph.add_edge(START, self.feed_context_node.get_name())
-        graph.add_edge(self.feed_context_node.get_name(), self.generate_answer_node.get_name())
-        graph.add_edge(self.generate_answer_node.get_name(), self.summarize_node.get_name())
+        graph.add_edge(
+            self.feed_context_node.get_name(), self.generate_answer_node.get_name()
+        )
+        graph.add_edge(
+            self.generate_answer_node.get_name(), self.summarize_node.get_name()
+        )
         graph.add_edge(self.summarize_node.get_name(), END)
 
         compiled_graph = graph.compile(checkpointer=MemorySaver())
@@ -407,6 +505,9 @@ class LongTermMemoryAgent(StandardAgent):
             for latest_message in latest_messages
         ]
         pre_reply_state = self._get_pre_reply_state(input_messages)
+        for node in self.graph_nodes:
+            node.on_about_to_run_graph(pre_reply_state)
+
         async for event in self.compiled_graph.astream_events(
             pre_reply_state, config=self._make_graph_config(), version="v2"
         ):

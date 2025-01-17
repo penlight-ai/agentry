@@ -4,6 +4,7 @@ import typing
 import os
 import uuid
 
+
 class MemoryData(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
@@ -17,47 +18,48 @@ class MemoryData(BaseModel):
         return MemoryData(id="", title="", description="", content="")
 
 
-class Memory(ABC):
-    @abstractmethod
-    def get_data(self) -> MemoryData:
-        raise NotImplementedError
-
-    @abstractmethod
-    def update(self, data: MemoryData) -> MemoryData:
-        raise NotImplementedError
-
-    @abstractmethod
-    def delete(self) -> None:
-        raise NotImplementedError
-
-class SimpleMemory(Memory):
-    def __init__(self, memory_data: MemoryData):
-        self.memory_data = memory_data
+class Memory:
+    def __init__(self, data: MemoryData):
+        self.data = data
 
     def get_data(self) -> MemoryData:
-        return self.memory_data 
-
-    def update(self, data: MemoryData) -> MemoryData:
-        self.memory_data = data
-        return self.memory_data
-
-    def delete(self) -> None:
-        self.memory_data = MemoryData.make_empty()
-
-# class FileMemory(Memory):
-#     def __init__(self, file_path: str, memory_data: MemoryData):
-#         self.file_path = file_path
-
-#     def get_data(self) -> MemoryData:
-#         with open(self.file_path, "r") as file:
-#             return MemoryData()
+        return self.data 
+    
 
 
 class MemoryManager(ABC):
     @abstractmethod
-    def get_memories(self) -> typing.Sequence[Memory]:
-        pass
+    def get_memory(self, id: str) -> typing.Optional[Memory]:
+        raise NotImplementedError
 
     @abstractmethod
-    def add_memory(self, memory: MemoryData) -> None:
-        pass
+    def create_memory(self, memory: Memory) -> Memory:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_memory(self, memory: Memory) -> Memory:
+        raise NotImplementedError
+
+    def get_or_otherwise_create_memory(self, memory_to_create: Memory) -> Memory:
+        fetched_memory = self.get_memory(memory_to_create.get_data().id)
+        if fetched_memory:
+            return fetched_memory
+        return self.create_memory(memory_to_create)
+
+class SimpleMemoryManager(MemoryManager):
+    def __init__(self):
+        self.memories: typing.Dict[str, Memory] = {}
+
+    def get_memory(self, id: str) -> typing.Optional[Memory]:
+        memory = self.memories.get(id)
+        if memory is None:
+            return None
+        return memory
+
+    def create_memory(self, memory: Memory) -> Memory:
+        self.memories[memory.get_data().id] = memory
+        return memory
+
+    def update_memory(self, memory: Memory) -> Memory:
+        self.memories[memory.get_data().id] = memory
+        return memory
